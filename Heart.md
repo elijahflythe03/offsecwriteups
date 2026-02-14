@@ -2,7 +2,7 @@
 
 ## Initial Setup
 
-Doesn't really give us much, but let's go ahead and create a hosts in our `/etc/hosts` file for convenience.
+Doesn't really give us much, but let's go ahead and create a host in our `/etc/hosts` file for convenience.
 
 <img width="975" height="834" alt="image" src="https://github.com/user-attachments/assets/a5f74ece-2eed-490f-a108-82a790ff697e" />
 
