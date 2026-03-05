@@ -1,1 +1,1 @@
-
+Cybersecurity Engineer at Eli Lilly & Co, specializing in Threat Surface Management on the Cyber Threat Mitigations team. This portfolio is documenting my journey towards full offensive security proficiency. 
