@@ -83,8 +83,6 @@ Going back to that unread notification, I clicked into it and noticed the URL ha
 
 Changing the ID to `6` pulled up the admin's notification inbox.
 
-![Admin notification containing SSH credentials via IDOR](media/image9.png)
-
 The admin left SSH credentials in a notification to another user. The message reads: `Username: tim` and includes the password in plaintext. ID=3 had another message but nothing useful. Sequential IDs really are fun to play with.
 
 ---
