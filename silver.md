@@ -114,6 +114,7 @@ On the target, I used `wget` from `/tmp` to pull the script over from my attacki
 
 
 After downloading, I changed the permissions to make it executable and ran it with `-s 2>/dev/null` to suppress stderr and keep the output clean, only showing useful findings.
+
 <img width="624" height="333" alt="image" src="https://github.com/user-attachments/assets/5c133ce4-80f2-4f46-af38-39047117e8ee" />
 
 LinPEAS kept failing partway through for some reason, so I moved on to manual enumeration. I checked `/etc/passwd` for other users on the box and found **tyler**. That gave me a new target for lateral movement.
@@ -121,8 +122,6 @@ LinPEAS kept failing partway through for some reason, so I moved on to manual en
 ### Credential Discovery in Auth Logs
 
 I checked the auth logs for anything useful.
-
-![Auth logs showing tyler's activity and docker commands](media/image14.png)
 
 The logs showed tyler running a `docker run` command with `-e POSTGRES_PASSWORD=Zd_zx7N823/` passed as an environment variable in plaintext. That's a credential exposure straight out of the sudo history.
 
