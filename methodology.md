@@ -78,7 +78,7 @@ searchsploit --nmap nmapresults.xml
 
 ```bash
 # Directory brute force
-gobuster dir -u http://<target> -w /usr/share/wordlists/dirb/big.txt
+ffuf -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 200 -u target/FUZZ -fs 0
 
 # Virtual host / subdomain enumeration
 gobuster vhost -u http://<target> -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt
