@@ -82,7 +82,7 @@ searchsploit --nmap nmapresults.xml
 ffuf -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 200 -u target/FUZZ -fs 0
 
 # Virtual host / subdomain enumeration
-gobuster vhost -u http://<target> -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt
+gobuster vhost -u http://<target> -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt --append-domain
 
 # DNS subdomain enumeration (alternative)
 gobuster dns -d <target-domain> -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt
