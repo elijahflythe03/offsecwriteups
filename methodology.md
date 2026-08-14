@@ -1,6 +1,6 @@
-# PT1 Junior Penetration Tester -- Methodology Cheatsheet
+# Elijahs Methodology 
 
-> TryHackMe PT1 Reference | Commands, tools, and workflows for junior penetration testing engagements.
+> Commands, tools, and workflows for penetration testing engagements.
 
 ---
 
@@ -1024,4 +1024,4 @@ $PSVersionTable          # confirm PowerShell version (cmdlet availability varie
 
 ---
 
-*Cheatsheet generated for TryHackMe PT1 Junior Penetration Tester certification prep.*
+
