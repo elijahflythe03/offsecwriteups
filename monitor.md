@@ -1,104 +1,156 @@
-# TryHackMe - Monitor Write-Up
+# TryHackMe — Monitor
 
-I kick things off with an nmap scan. I've been leaning on verbose mode more often lately so I can watch results come in live instead of waiting on the whole scan to finish before seeing anything.
+**Difficulty:** Medium
+**Category:** Web Exploitation → RCE → Credential Harvesting → Privilege Escalation
 
-<img width="905" height="557" alt="image" src="https://github.com/user-attachments/assets/342ff9cf-fde0-42c2-9c4e-4904856e143b" />
+---
 
+## Overview
 
-The scan turns up two open ports: 22, running OpenSSH, and 5050, running a Werkzeug/Python web app. Since there's nothing to do with SSH without credentials yet, I head over to the web app first.
+Monitor is a web exploitation box centered on an internal NOC monitoring dashboard. The path runs from directory brute-forcing, through a SQL injection auth bypass, into command injection RCE on a "ping" utility, and finally to root via a cracked KeePass database recovered from a backup directory.
 
-<img width="1358" height="1012" alt="image" src="https://github.com/user-attachments/assets/6122eeab-4f99-425d-b940-c508bd050800" />
+**Attack chain summary:**
+`Recon → Hidden directory discovery → SQLi auth bypass → RCE via ping utility → Credential leak → SSH foothold → KeePass DB found & cracked → Root`
 
+---
 
-It's a completely static landing page — no buttons, forms, or links to click through. Nothing on the surface to interact with, so it's time to dig under the hood instead.
+## 1. Reconnaissance
 
-Using ffuf to brute-force directories against the webroot, I turn up a hidden `/internal` path that isn't linked anywhere on the page.
+I started with an nmap scan, using verbose mode to watch results come in live rather than waiting for the full scan to complete.
 
-<img width="829" height="121" alt="image" src="https://github.com/user-attachments/assets/780d7484-ea76-4671-adbb-693d9e8ce505" />
+<img width="905" height="557" alt="nmap scan" src="https://github.com/user-attachments/assets/342ff9cf-fde0-42c2-9c4e-4904856e143b" />
 
+**Findings:**
+- **Port 22** — OpenSSH (no credentials yet, nothing to act on)
+- **Port 5050** — Werkzeug/Python web app
 
-Navigating to `/internal` drops me straight into an authentication portal — an operator login screen gating whatever lives behind it. Let's see what's back there.
+With SSH out of reach for now, I moved to the web app.
 
-<img width="485" height="420" alt="image" src="https://github.com/user-attachments/assets/1517a6d6-2544-440a-9045-0ee8dc4b2a0d" />
+<img width="1358" height="1012" alt="landing page" src="https://github.com/user-attachments/assets/6122eeab-4f99-425d-b940-c508bd050800" />
 
+The landing page was completely static — no forms, buttons, or links. Nothing to interact with on the surface, so the next step was enumeration underneath it.
 
-Since everything past this point is authenticated, before touching the login form itself I want to know what else exists behind it. I run a second directory scan scoped to `/internal` and turn up three more endpoints: `health`, `logout`, and `dashboard`.
+---
 
-<img width="1054" height="479" alt="image" src="https://github.com/user-attachments/assets/1444fc48-c7de-44a9-8be9-d9096d0b4aed" />
+## 2. Enumeration
 
+### 2.1 Directory brute-forcing
 
-With the app mapped out, I start manually testing the login form for injection points — throwing a handful of payloads at the username and password fields to see how the backend reacts. It doesn't take long before the simplest possible SQL injection payload gets a response worth looking at.
+Running ffuf against the webroot turned up a hidden path not linked anywhere on the page: `/internal`.
 
-<img width="1236" height="405" alt="image" src="https://github.com/user-attachments/assets/fff36e2a-2415-4596-9f41-0dfb404ffabb" />
+<img width="829" height="121" alt="ffuf hidden /internal path" src="https://github.com/user-attachments/assets/780d7484-ea76-4671-adbb-693d9e8ce505" />
 
+Navigating there landed on an operator login portal, gating whatever sat behind it.
 
-The login request comes back with a redirect and a fresh session cookie — the auth check got bypassed outright. First thing I do is decode the JWT sitting in that cookie to see what access it actually grants.
+<img width="485" height="420" alt="operator login portal" src="https://github.com/user-attachments/assets/1517a6d6-2544-440a-9045-0ee8dc4b2a0d" />
 
-<img width="1308" height="421" alt="image" src="https://github.com/user-attachments/assets/c9b36131-a9c2-4ff9-bfb3-88f9234e1421" />
+### 2.2 Scoped enumeration behind auth
 
+Before touching the login form, I ran a second ffuf scan scoped to `/internal` to map what else existed behind the gate. This turned up three more endpoints:
 
-The decoded token confirms it: I'm holding a valid session as a NOC operator.
+- `/internal/health`
+- `/internal/logout`
+- `/internal/dashboard`
 
-<img width="1561" height="907" alt="image" src="https://github.com/user-attachments/assets/f7756d34-1d44-4668-96c5-00f1d063638c" />
+<img width="1054" height="479" alt="scoped ffuf results" src="https://github.com/user-attachments/assets/1444fc48-c7de-44a9-8be9-d9096d0b4aed" />
 
+---
 
-Poking around the dashboard, the audit log leaks a handful of legitimate usernames — `jmartin`, `svc-mon`, and `netops` — worth keeping in mind for later. More interesting is the Host Health tab, which lets an operator run connectivity probes against arbitrary targets. Any feature that takes a user-supplied host and does something with it on the backend is immediately worth attacking.
+## 3. Initial Access — SQL Injection Auth Bypass
 
-<img width="1218" height="626" alt="image" src="https://github.com/user-attachments/assets/54aa9ff7-6f56-4fbc-b81d-15c8281298a9" />
+With the app mapped, I manually tested the login form for injection points. The simplest possible SQLi payload was enough to get a response worth investigating.
 
+<img width="1236" height="405" alt="SQLi payload against login form" src="https://github.com/user-attachments/assets/fff36e2a-2415-4596-9f41-0dfb404ffabb" />
 
-Testing the probe out, it clearly wraps a `ping` command and returns the raw output. I want to know if that's all it does, so I try chaining an `id` command onto the target field — server-side validation blocks it outright.
+The request returned a redirect and a fresh session cookie — the auth check had been bypassed outright. Decoding the JWT in that cookie confirmed the access level it granted.
 
-<img width="1260" height="673" alt="image" src="https://github.com/user-attachments/assets/7969b591-a506-4b31-90a9-8034e1412787" />
+<img width="1308" height="421" alt="decoded JWT" src="https://github.com/user-attachments/assets/c9b36131-a9c2-4ff9-bfb3-88f9234e1421" />
 
+The token confirmed a valid session as a **NOC operator**.
 
-To get around the validator blocking the `id` command, I swap out the usual injection characters for a URL-encoded newline instead — the `%0a` bypasses whatever character blocklist is doing the filtering:
+<img width="1561" height="907" alt="NOC operator dashboard access" src="https://github.com/user-attachments/assets/f7756d34-1d44-4668-96c5-00f1d063638c" />
 
+**Dashboard recon:**
+- The audit log leaked several legitimate usernames: `jmartin`, `svc-mon`, `netops` — noted for later.
+- The **Host Health** tab let an operator run connectivity probes against arbitrary targets — a user-supplied host handled server-side is immediately worth attacking.
+
+<img width="1218" height="626" alt="Host Health probe feature" src="https://github.com/user-attachments/assets/54aa9ff7-6f56-4fbc-b81d-15c8281298a9" />
+
+---
+
+## 4. Remote Code Execution
+
+Testing the probe confirmed it wrapped a `ping` command and returned raw output. Chaining an `id` command onto the target field was blocked by server-side validation.
+
+<img width="1260" height="673" alt="blocked command injection attempt" src="https://github.com/user-attachments/assets/7969b591-a506-4b31-90a9-8034e1412787" />
+
+Swapping the usual injection characters for a URL-encoded newline bypassed the blocklist:
+
+```
 127.0.0.1%0aid
+```
 
-This bypasses the validation cleanly and the `id` output comes back in the response — confirmed remote code execution. From here I want to pull whatever information I can off the box through this injection point before committing to a full reverse shell.
+This cleared validation cleanly, and the `id` output came back in the response — confirmed RCE.
 
-<img width="1241" height="688" alt="image" src="https://github.com/user-attachments/assets/63efa739-5411-4cd6-b58c-2ec0252f26e4" />
+<img width="1241" height="688" alt="confirmed RCE via id command" src="https://github.com/user-attachments/assets/63efa739-5411-4cd6-b58c-2ec0252f26e4" />
 
+### Credential discovery
 
-Poking around the filesystem through the injection, I find a file called `secret.config`. Catting it out with the same RCE turns up plaintext credentials sitting right there in the config.
+Before committing to a full reverse shell, I used the injection point to explore the filesystem and found `secret.config`. Catting it out revealed plaintext credentials.
 
-<img width="1239" height="641" alt="image" src="https://github.com/user-attachments/assets/229dda16-be32-44cf-a42c-9de6fc7a71d0" />
+<img width="1239" height="641" alt="secret.config plaintext credentials" src="https://github.com/user-attachments/assets/229dda16-be32-44cf-a42c-9de6fc7a71d0" />
 
+---
 
-Port 22 is the only other exposed attack surface on the box, so I try authenticating over SSH with the credentials I just pulled. They work — I'm in.
+## 5. Foothold — SSH
 
-<img width="441" height="128" alt="image" src="https://github.com/user-attachments/assets/fc9edc2e-07ca-4b02-8e11-d64eb5a0fe77" />
+Port 22 was the only other exposed surface, so I tried the recovered credentials there. They worked.
 
+<img width="441" height="128" alt="SSH login success" src="https://github.com/user-attachments/assets/fc9edc2e-07ca-4b02-8e11-d64eb5a0fe77" />
 
-After grabbing the user flag, I want to confirm what other accounts on the box actually have shell access, so I check `/etc/passwd` for anything running `bash`.
+After grabbing the user flag, I checked `/etc/passwd` for accounts with shell access, to scope out other potential users worth pivoting to.
 
-<img width="478" height="68" alt="image" src="https://github.com/user-attachments/assets/5af160b4-4625-46d6-b80a-0808e3984fe0" />
+<img width="478" height="68" alt="/etc/passwd bash users" src="https://github.com/user-attachments/assets/5af160b4-4625-46d6-b80a-0808e3984fe0" />
 
+---
 
-Digging through the `ubuntu` home directory doesn't turn up much of anything useful. I step back and revisit the `sysadmin` home directory instead, and realize I'd skipped over a `backups` folder the first time through. Inside is an `infrastructure.kdbx` file — but the contents are encrypted when I try to open it. A quick lookup confirms `.kdbx` is a KeePass password database file.
+## 6. Privilege Escalation
 
-<img width="683" height="75" alt="image" src="https://github.com/user-attachments/assets/3fbffdca-67c1-4604-91a3-027f7295528f" />
+The `ubuntu` home directory had nothing useful. Revisiting `sysadmin`'s home directory, I caught a `backups` folder I'd skipped over the first pass. Inside was `infrastructure.kdbx` — encrypted, and quickly identified as a KeePass password database.
 
+<img width="683" height="75" alt="infrastructure.kdbx found in backups" src="https://github.com/user-attachments/assets/3fbffdca-67c1-4604-91a3-027f7295528f" />
 
-I pull the database back to my local machine so I can work on cracking it properly.
+### 6.1 Cracking the vault
 
-First attempt is a targeted brute force using a custom, AI-generated wordlist built off context clues from the room — hostnames, themes, technology in play. No luck.
+I pulled the database to my local machine to work on it properly.
 
-<img width="761" height="184" alt="image" src="https://github.com/user-attachments/assets/0e00f5a2-3070-4ca4-b228-b66a9477911f" />
+- **Attempt 1:** Targeted brute force with a custom AI-generated wordlist built from context clues in the room (hostnames, themes, tech stack). No luck.
 
+<img width="761" height="184" alt="failed targeted brute force" src="https://github.com/user-attachments/assets/0e00f5a2-3070-4ca4-b228-b66a9477911f" />
 
-Next I convert the database to a crackable hash and hand it off to John the Ripper instead — and this time it finds the master password.
+- **Attempt 2:** Converted the database to a crackable hash and handed it to John the Ripper — this found the master password.
 
-<img width="1158" height="363" alt="image" src="https://github.com/user-attachments/assets/87d5f7c1-fbf9-4ad0-b745-bf7b448587fe" />
+<img width="1158" height="363" alt="John the Ripper cracks master password" src="https://github.com/user-attachments/assets/87d5f7c1-fbf9-4ad0-b745-bf7b448587fe" />
 
+### 6.2 Root credentials
 
-With the cracked master password, I unlock the vault through the KeePass CLI, and browsing the stored entries turns up root's credentials.
+With the cracked master password, I unlocked the vault via the KeePass CLI. Browsing the stored entries turned up root's credentials.
 
-<img width="824" height="167" alt="image" src="https://github.com/user-attachments/assets/f6bdc359-decf-4780-ae4f-951d70422296" />
+<img width="824" height="167" alt="root credentials in KeePass vault" src="https://github.com/user-attachments/assets/f6bdc359-decf-4780-ae4f-951d70422296" />
 
+---
 
-Now I switch users to root with those credentials and cat out root.txt. End of challenge.
+## 7. Root
 
-<img width="323" height="86" alt="image" src="https://github.com/user-attachments/assets/ca9ac2e2-4b00-47d2-8909-85dabb4e900d" />
+Switched users to root with the recovered credentials and read out `root.txt`. End of challenge.
 
+<img width="323" height="86" alt="root flag" src="https://github.com/user-attachments/assets/ca9ac2e2-4b00-47d2-8909-85dabb4e900d" />
+
+---
+
+## Key Takeaways
+
+- **Authentication bypass:** No input sanitization on the login form allowed a trivial SQLi payload to bypass auth entirely.
+- **Command injection filtering:** Blocklist-based validation on the ping utility was defeated with a simple `%0a` newline encoding — allowlisting or proper shell argument handling would have prevented it.
+- **Secrets management:** Plaintext credentials in `secret.config` gave a direct path to SSH access.
+- **Backup hygiene:** An unprotected `.kdbx` backup in a home directory, secured only by a crackable master password, was the difference between a user shell and root.
