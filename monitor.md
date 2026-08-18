@@ -195,42 +195,4 @@ cat root.txt
 
 **Root Flag:** `THM{KDBx_V4ul7_H4s_b33n_cr4ck3d_0peN}`
 
----
 
-## Attack Chain
-
-```
-Nmap scan -> Werkzeug/Flask app on :5050 (CorpNet NOC portal)
-    |
-    v
-ffuf -> /internal login portal -> /internal/health, /logout, /dashboard
-    |
-    v
-SQLi auth bypass (' OR 1=1--) -> operator session (JWT: role=operator, user=netops)
-    |
-    v
-Host Health probe -> command injection via %0a bypass -> RCE as www-data
-    |
-    v
-secret.config leaks sysadmin plaintext credentials
-    |
-    v
-SSH as sysadmin -> user.txt
-    |
-    v
-backups/infrastructure.kdbx (KeePass DB) exfiltrated
-    |
-    v
-keepass2john + John the Ripper -> master password "spring"
-    |
-    v
-keepassxc-cli -> root credentials stored in vault -> su root -> root.txt
-```
-
-### Key Takeaways
-
-- Login forms need parameterized queries, not string-concatenated SQL — a single `' OR 1=1--` shouldn't ever grant a session.
-- Server-side input validation on the probe field blocked common shell metacharacters (`;`, `&&`, `|`) but missed URL-encoded newlines (`%0a`) — blocklists are inherently incomplete; allowlist expected input formats instead (e.g., strict IP/hostname regex).
-- Never leave plaintext credentials in application config files, even "temporary" ones with a migration TODO attached — that TODO is exactly the window an attacker exploits.
-- A cracked local account shouldn't be a dead end — always sweep home directories (including easily-overlooked subfolders like `backups/`) for credential material such as password vaults, SSH keys, or history files.
-- Weak KeePass master passwords are crackable offline at speed once the `.kdbx` file is exfiltrated — enforce long, unique master passwords and treat the database file itself as a secret worth protecting in transit and at rest.
