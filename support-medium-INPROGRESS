@@ -1,0 +1,45 @@
+support.thm
+
+i started with a verbose network scan and quickly identified a web app on port 80 and ssh on port 22.
+
+<img width="822" height="608" alt="image" src="https://github.com/user-attachments/assets/e8f395ac-11e7-4aec-b448-1607f10633c3" />
+
+When viewing the web app its an employee auth portal for a support operations panel. We see a "contatc IT Operations @ help@support.thm" and note that down as a potential account. 
+
+<img width="1720" height="576" alt="image" src="https://github.com/user-attachments/assets/020afa6c-18e3-40d8-906a-b023fee1a9db" />
+
+After additional reconnaisance I uncover a couple hidden routes using nikto, one being config.php and info.php. 
+
+<img width="1091" height="171" alt="image" src="https://github.com/user-attachments/assets/993f6b6c-3bba-4b5f-bceb-b32551fdf61a" />
+
+When viewing info.php it shows an enormous amount of system specifications and information
+
+<img width="1054" height="1056" alt="image" src="https://github.com/user-attachments/assets/9bc28f3e-139f-4145-994c-10d418bb98de" />
+
+we cant really do anything with this information unauthenticated, so we keep moving. Now my target is auth bypass or surfacing credentials.
+
+I try a number of sql and xss payloads but nothing triggers any errors or abnormalities, I then use hydra along with the valid account we know of (help@support.thm) to brute force credentials with the rockyou.txt wordlist and uncover the password for this account!
+
+<img width="906" height="159" alt="image" src="https://github.com/user-attachments/assets/665dcdd4-8588-4eb0-a457-b9ea6181ccf9" />
+
+when entering its simply a ticket management system.. but its a blank page. 
+
+<img width="1769" height="448" alt="image" src="https://github.com/user-attachments/assets/6da54dff-005b-45a3-b4d2-adb39563c9ee" />
+
+After inspecting the HTML line by line I don't see anything interesting, the only functionality on this entire page is the ability to select the theme of this page.
+
+<img width="301" height="241" alt="image" src="https://github.com/user-attachments/assets/0a5a7b30-c2f1-4545-a7fa-43116b599e54" />
+
+after toying with it I notice something in the url, the ?skin= parameter and its potential to test for injection 
+
+<img width="334" height="44" alt="image" src="https://github.com/user-attachments/assets/be22c37e-a202-4c26-bff6-5f362ccab81d" />
+
+
+
+
+
+
+
+
+
+
