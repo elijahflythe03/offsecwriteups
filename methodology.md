@@ -84,8 +84,9 @@ ffuf -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -t 200 -u t
 # Virtual host / subdomain enumeration
 gobuster vhost -u http://<target> -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt --append-domain
 
-# DNS subdomain enumeration (alternative)
-gobuster dns -d <target-domain> -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt
+# Dir BF
+ffuf -w /usr/share/wordlists/seclists/Discovery/Web-Content/raft-large-directories.txt -u http://target/FUZZ -e .php,.php.bak,.html,.txt,.log,.js,.zip -t 100 -fc 404 -mc 200,204,301,302,307,401,403,405 -ic -recursion -recursion-depth 2
+
 ```
 
 ---
