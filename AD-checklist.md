@@ -109,7 +109,7 @@ Once you have one valid credential (password, hash, or ticket):
 
 - [ ] Collect with **bloodhound-python** (or SharpHound if you have a foothold on a domain-joined box):
   ```
-  bloodhound-python -u user -p pass -d domain.tld -ns <dc-ip> -c All --zip
+  bloodhound-python -u <user> -p “password” -d k2.thm -v — zip -c All -dc K2Server.k2.thm -ns 10.10.61.132
   ```
 - [ ] Confirm SharpHound collector version matches your BloodHound UI's expected schema (BloodHound Legacy vs BloodHound CE use different data formats — mismatches fail silently or partially)
 - [ ] In the UI, check for the current user/group's **Outbound Object Control**:
