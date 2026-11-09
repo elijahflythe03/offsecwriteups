@@ -35,7 +35,17 @@ We see that its boolean logic, true or false, so what if we made it true? my fir
 
 <img width="1125" height="128" alt="image" src="https://github.com/user-attachments/assets/a395475f-d3c6-48a8-a47b-28753835cf60" />
 
-I get sent to dashboard.php, which has a file upload feature, and a url fetching feature - immediately I think of SSRF via url so I test by spinning up my own listener and calling it
+I get sent to dashboard.php, which has a file upload feature, and a url fetching feature - immediately I think of SSRF or some kind of code execution via the URL import feature
+
+<img width="1372" height="560" alt="image" src="https://github.com/user-attachments/assets/53e52590-080c-400c-ae81-fe927e0c359e" />
+
+After attempting to call my own server, 127.0.0.1, and other attemnpts to pull the contents of the file directly I came across a syntax that bypassed the guardrails and got the flag
+
+<img width="1267" height="273" alt="image" src="https://github.com/user-attachments/assets/570c6ae0-b04c-459a-b308-601761310609" />
+
+
+
+
 
 
 
